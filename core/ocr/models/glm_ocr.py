@@ -22,6 +22,7 @@ from ...config.ocr_config import OCRConfig
 from ...layout.labels     import DocLabel
 from ..base               import BaseOCRModel
 from ..prompt_builder     import PromptBuilder
+from ..text_cleaner       import TextCleaner
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ class GLMOCRModel(BaseOCRModel):
         self._processor  = None
         self._lock       = threading.Lock()
         self._prompt_bld = PromptBuilder()
+        self._cleaner    = TextCleaner()
         super().__init__(config)
 
     def _load(self) -> None:
@@ -109,7 +111,7 @@ class GLMOCRModel(BaseOCRModel):
             new_ids  = generated_ids[0][inputs["input_ids"].shape[1]:]
             raw_text = self._processor.decode(new_ids, skip_special_tokens=True)
 
-        return raw_text.strip()
+        return self._cleaner.clean(raw_text.strip(), label)
 
     def _resolve_device_map(self):
         dev = self.config.device
