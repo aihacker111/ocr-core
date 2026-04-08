@@ -1,0 +1,3 @@
+# Only needed for the dummy-model smoke tests (no GPU/weights)
+pillow>=9.0
+numpy>=1.24
