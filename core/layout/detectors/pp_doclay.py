@@ -26,7 +26,7 @@ from ..region import LayoutRegion
 logger = logging.getLogger(__name__)
 
 _HF_REPO        = "PaddlePaddle/PP-DocLayoutV3_safetensors"
-_MODEL_FILENAME = "PP-DocLayoutV3.pt"          # ultralytics-compatible weights
+_MODEL_FILENAME = "model.safetensors"          # ultralytics-compatible weights
 
 
 class PPDocLayoutDetector(BaseLayoutDetector):
