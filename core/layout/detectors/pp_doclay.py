@@ -1,11 +1,11 @@
 """
-PP-DocLayout-V3 detector — PyTorch backend via ultralytics.
+PP-DocLayout-V3 detector — PyTorch backend via HuggingFace transformers.
 
 Model source: PaddlePaddle/PP-DocLayoutV3_safetensors (HuggingFace)
-Architecture: RT-DETR / YOLO variant, loaded via ultralytics.YOLO / RTDETR
+Architecture: RT-DETR, loaded via AutoModelForObjectDetection
 
-The safetensors weights are downloaded once and cached locally.
-No ONNX runtime required — pure PyTorch inference.
+Weights are downloaded once and cached by the transformers library.
+No ultralytics / ONNX runtime required — pure transformers inference.
 """
 
 from __future__ import annotations
@@ -13,39 +13,32 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+import torch
 from PIL import Image
 
 from ...config.layout_config import LayoutConfig
-from ...utils.downloader import ModelDownloader
 from ..base import BaseLayoutDetector
 from ..labels import label_from_index
 from ..postprocessor import LayoutPostprocessor
-from ..preprocessor import LayoutPreprocessor
 from ..region import LayoutRegion
 
 logger = logging.getLogger(__name__)
 
-_HF_REPO        = "PaddlePaddle/PP-DocLayoutV3_safetensors"
-_MODEL_FILENAME = "model.safetensors"          # ultralytics-compatible weights
+_HF_REPO = "PaddlePaddle/PP-DocLayoutV3_safetensors"
 
 
 class PPDocLayoutDetector(BaseLayoutDetector):
     """
-    Concrete layout detector backed by PP-DocLayout-V3 running on PyTorch
-    through the ultralytics inference API.
+    Concrete layout detector backed by PP-DocLayout-V3 via transformers.
 
-    Swap tip: replace this class with any other BaseLayoutDetector subclass
-    in pipeline_config.py — the pipeline never references this class directly.
+    Uses AutoModelForObjectDetection + AutoImageProcessor so the full
+    pre/post-processing is handled by the official HuggingFace pipeline.
     """
 
     def __init__(self, config: LayoutConfig) -> None:
-        # These are set before super().__init__() calls _load()
-        self._model     = None
-        self._pre       = LayoutPreprocessor(
-            input_size=config.input_size,
-            normalize=False,   # ultralytics normalises internally
-        )
-        self._post      = LayoutPostprocessor(
+        self._model           = None
+        self._image_processor = None
+        self._post = LayoutPostprocessor(
             score_threshold=config.score_threshold,
             nms_iou_threshold=config.nms_iou_threshold,
             containment_overlap=config.containment_overlap,
@@ -56,85 +49,95 @@ class PPDocLayoutDetector(BaseLayoutDetector):
     # ── BaseLayoutDetector contract ────────────────────────────────────────────
 
     def _load(self) -> None:
-        model_path = self._resolve_weights()
-        self._model = self._build_model(model_path)
+        try:
+            from transformers import AutoImageProcessor, AutoModelForObjectDetection
+        except ImportError as exc:
+            raise ImportError(
+                "transformers is required for PPDocLayoutDetector.\n"
+                "Install with:  pip install transformers"
+            ) from exc
+
+        model_id  = self.config.model_path or _HF_REPO
+        cache_dir = str(Path(self.config.cache_dir).expanduser()) if not self.config.model_path else None
+        device    = self._resolve_device()
+
+        logger.info("[PPDocLayout] Loading image processor from: %s", model_id)
+        self._image_processor = AutoImageProcessor.from_pretrained(
+            model_id,
+            cache_dir=cache_dir,
+        )
+
+        logger.info("[PPDocLayout] Loading model from: %s", model_id)
+        self._model = AutoModelForObjectDetection.from_pretrained(
+            model_id,
+            cache_dir=cache_dir,
+        )
+        self._model.to(device)
+        self._model.eval()
+        logger.info("[PPDocLayout] Model loaded on device: %s", device)
 
     def _predict(self, image: Image.Image) -> list[LayoutRegion]:
         image = image.convert("RGB")
         raw_regions = self._run_inference(image)
         return self._post.process(raw_regions)
 
-    # ── Model resolution ───────────────────────────────────────────────────────
-
-    def _resolve_weights(self) -> Path:
-        if self.config.model_path:
-            path = Path(self.config.model_path)
-            if not path.exists():
-                raise FileNotFoundError(f"Explicit model_path not found: {path}")
-            logger.info("[PPDocLayout] Using explicit weights: %s", path)
-            return path
-
-        cache = Path(self.config.cache_dir) / _MODEL_FILENAME
-        if cache.exists():
-            logger.info("[PPDocLayout] Using cached weights: %s", cache)
-            return cache
-
-        logger.info("[PPDocLayout] Downloading weights from HuggingFace …")
-        downloader = ModelDownloader(cache_root=self.config.cache_dir)
-        return Path(downloader.download(
-            repo_id=_HF_REPO,
-            filename=_MODEL_FILENAME,
-        ))
-
-    def _build_model(self, model_path: Path):
-        try:
-            from ultralytics import YOLO
-        except ImportError as exc:
-            raise ImportError(
-                "ultralytics is required for PPDocLayoutDetector.\n"
-                "Install with: pip install ultralytics"
-            ) from exc
-
-        model = YOLO(str(model_path))
-        device = self._resolve_device()
-        model.to(device)
-        logger.info("[PPDocLayout] Model on device: %s", device)
-        return model
-
     # ── Inference ──────────────────────────────────────────────────────────────
 
     def _run_inference(self, image: Image.Image) -> list[LayoutRegion]:
-        """Run ultralytics inference and convert raw results to LayoutRegion."""
-        results = self._model.predict(
-            source=image,
-            imgsz=max(self.config.input_size),
-            conf=self.config.score_threshold,
-            iou=self.config.nms_iou_threshold,
-            device=self._resolve_device(),
-            verbose=False,
+        """
+        Run transformers object-detection inference and convert results
+        to a flat list of LayoutRegion.
+        """
+        device = self._resolve_device()
+
+        # Preprocess — image_processor handles resize, normalise, tensor conversion
+        inputs = self._image_processor(images=image, return_tensors="pt")
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+
+        # Forward pass
+        with torch.inference_mode():
+            outputs = self._model(**inputs)
+
+        # Post-process — returns boxes in original image pixel space
+        results = self._image_processor.post_process_object_detection(
+            outputs,
+            target_sizes=[image.size[::-1]],   # (height, width)
         )
 
         regions: list[LayoutRegion] = []
         if not results:
             return regions
 
-        result = results[0]
-        if result.boxes is None:
-            return regions
+        result = results[0]   # batch size = 1
 
-        boxes  = result.boxes.xyxy.cpu().numpy()   # [N, 4]  x1y1x2y2
-        scores = result.boxes.conf.cpu().numpy()   # [N]
-        labels = result.boxes.cls.cpu().numpy().astype(int)  # [N]
+        scores         = result["scores"]
+        label_ids      = result["labels"]
+        boxes          = result["boxes"]
+        polygon_points = result.get("polygon_points", [None] * len(scores))
 
-        for idx, (box, score, label_idx) in enumerate(zip(boxes, scores, labels)):
-            x1, y1, x2, y2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
+        for idx, (score, label_id, box, poly) in enumerate(
+            zip(scores, label_ids, boxes, polygon_points)
+        ):
+            score_val = score.item()
+            if score_val < self.config.score_threshold:
+                continue
+
+            x1, y1, x2, y2 = (int(round(v)) for v in box.tolist())
             if x2 <= x1 or y2 <= y1:
                 continue
+
+            # Convert polygon tensor → list[list[int]] if present
+            poly_list = None
+            if poly is not None:
+                poly_list = [[int(round(p[0])), int(round(p[1]))]
+                             for p in poly.tolist()]
+
             regions.append(LayoutRegion(
                 index=idx,
-                label=label_from_index(label_idx),
-                score=float(score),
+                label=label_from_index(label_id.item()),
+                score=score_val,
                 bbox=[x1, y1, x2, y2],
+                poly=poly_list,
             ))
 
         return regions
@@ -143,9 +146,5 @@ class PPDocLayoutDetector(BaseLayoutDetector):
 
     def _resolve_device(self) -> str:
         if self.config.device == "auto":
-            try:
-                import torch
-                return "cuda" if torch.cuda.is_available() else "cpu"
-            except ImportError:
-                return "cpu"
+            return "cuda" if torch.cuda.is_available() else "cpu"
         return self.config.device
