@@ -10,8 +10,10 @@ Pipeline stages
 
 Quick start
 -----------
-    from ocr_core.pipeline import OCRPipeline
-    from ocr_core.config   import PipelineConfig, LayoutConfig, OCRConfig
+    from core.pipeline import OCRPipeline
+    from core.config.pipeline_config import PipelineConfig
+    from core.config.layout_config import LayoutConfig
+    from core.config.ocr_config import OCRConfig
 
     # Use dummy models (no weights needed — for testing):
     cfg = PipelineConfig(

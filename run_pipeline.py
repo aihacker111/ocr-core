@@ -14,6 +14,12 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+
+# Repo root must be on path (Colab: cd /content/ocr-core before running).
+_ROOT = Path(__file__).resolve().parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
 from core import OCRPipeline, PipelineConfig, LayoutConfig, OCRConfig
 
 
@@ -37,7 +43,20 @@ def main() -> int:
         help="Write merged text to this file (default: print to stdout)",
     )
     args = parser.parse_args()
-    pipeline = OCRPipeline()
+
+    if not args.path.exists():
+        print("error: path does not exist:", args.path, file=sys.stderr)
+        return 1
+
+    if args.dummy:
+        pipeline = OCRPipeline(
+            PipelineConfig(
+                layout=LayoutConfig(detector_name="dummy"),
+                ocr=OCRConfig(model_name="dummy"),
+            )
+        )
+    else:
+        pipeline = OCRPipeline()
 
     text = pipeline.run_file_to_string(args.path)
 
