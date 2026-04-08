@@ -13,7 +13,7 @@ Usage:
     python run_pipeline.py page.png --layout-out debug/layout.png
     python run_pipeline.py doc.pdf --pages 1-3 --output result.md
     python run_pipeline.py doc.pdf -o report.md --embed-images
-    python run_pipeline.py doc.pdf -o report.md   # .md + markdown format → auto figure dir
+    python run_pipeline.py doc.pdf -o report.md   # auto: report_images/ + abs paths in MD
     python run_pipeline.py doc.pdf -o notes.md --no-embed-images
     python run_pipeline.py doc.pdf --save-images-dir output/figures
 """
@@ -51,27 +51,32 @@ def _resolve_image_save_paths(
     """
     Returns (save_images_dir, markdown_image_prefix) for PipelineConfig.
 
-    Explicit ``--save-images-dir`` writes there and uses the same path in links.
-    ``--embed-images`` without that flag creates ``<output_stem>_images/`` next
-    to ``-o`` and uses that folder name in Markdown so previews resolve.
+    Explicit ``--save-images-dir`` writes there; Markdown ``![](...)`` uses the
+    same resolved path (absolute).
+
+    ``--embed-images`` / auto-embed: creates ``<output_stem>_images/`` next to
+    ``-o`` and sets ``markdown_image_prefix`` to that folder's **absolute** path
+    so tools (WeasyPrint, Colab, etc.) do not mis-resolve ``/stem_images/...``.
     """
     if save_images_dir is not None:
         root = save_images_dir.expanduser().resolve()
         root.mkdir(parents=True, exist_ok=True)
-        return str(root), None
+        return root.as_posix(), None
 
     if not embed_images:
         return None, None
 
     if output is not None:
         out = output.expanduser().resolve()
-        folder = out.parent / f"{out.stem}_images"
+        folder = (out.parent / f"{out.stem}_images").resolve()
         folder.mkdir(parents=True, exist_ok=True)
-        return str(folder.resolve()), f"{out.stem}_images"
+        disk = folder.as_posix()
+        return disk, disk
 
     fallback = (Path.cwd() / "embedded_images").resolve()
     fallback.mkdir(parents=True, exist_ok=True)
-    return str(fallback), "embedded_images"
+    disk = fallback.as_posix()
+    return disk, disk
 
 
 def _parse_pages(value: str) -> PagesSpec:
@@ -195,7 +200,7 @@ def main() -> int:
         action="store_true",
         help=(
             "Save crops next to -o as <name>_images/ (or ./embedded_images if no -o).\n"
-            "Markdown links use that folder name so previews work next to the .md file."
+            "Markdown ![](...) uses the absolute path to that folder (WeasyPrint/Colab-friendly)."
         ),
     )
     parser.add_argument(
