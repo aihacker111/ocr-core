@@ -26,29 +26,34 @@ from ..layout.labels import DocLabel
 from ..layout.region import LayoutRegion
 
 _LABEL_COLOURS: dict[DocLabel, tuple[int, int, int]] = {
-    DocLabel.DOC_TITLE:        (30,  100, 220),
-    DocLabel.PARAGRAPH_TITLE:  (60,  140, 240),
-    DocLabel.TEXT:             (90,  160, 255),
-    DocLabel.ABSTRACT:         (50,  120, 200),
-    DocLabel.REFERENCE:        (100, 170, 255),
-    DocLabel.LIST:             (70,  150, 230),
-    DocLabel.CODE:             (20,  80,  180),
-    DocLabel.FIGURE:           (40,  180,  80),
-    DocLabel.FIGURE_CAPTION:   (80,  200, 120),
-    DocLabel.FIGURE_FOOTNOTE:  (60,  190, 100),
-    DocLabel.CHART:            (30,  160,  60),
-    DocLabel.CHART_CAPTION:    (70,  185, 110),
-    DocLabel.CHART_FOOTNOTE:   (55,  175,  95),
-    DocLabel.TABLE:            (230, 130,  20),
-    DocLabel.TABLE_CAPTION:    (245, 160,  60),
-    DocLabel.TABLE_FOOTNOTE:   (240, 150,  40),
-    DocLabel.ISOLATE_FORMULA:  (170,  60, 220),
-    DocLabel.FORMULA_CAPTION:  (190,  90, 240),
-    DocLabel.HEADER:           (130, 130, 130),
-    DocLabel.FOOTER:           (130, 130, 130),
-    DocLabel.PAGE_NUMBER:      (150, 150, 150),
-    DocLabel.SEAL:             (110, 110, 110),
-    DocLabel.ABANDON:          (220,  50,  50),
+    # Blues — textual
+    DocLabel.DOC_TITLE:          (30,  100, 220),
+    DocLabel.PARAGRAPH_TITLE:    (60,  140, 240),
+    DocLabel.TEXT:               (90,  160, 255),
+    DocLabel.ABSTRACT:           (50,  120, 200),
+    DocLabel.CONTENT:            (80,  150, 235),
+    DocLabel.ASIDE_TEXT:         (110, 170, 255),
+    DocLabel.REFERENCE:          (100, 170, 255),
+    DocLabel.REFERENCE_CONTENT:  (115, 175, 255),
+    DocLabel.FOOTNOTE:           (70,  145, 225),
+    DocLabel.ALGORITHM:          (20,  80,  180),
+    # Greens — graphical
+    DocLabel.IMAGE:              (40,  180,  80),
+    DocLabel.FIGURE_TITLE:       (80,  200, 120),
+    DocLabel.CHART:              (30,  160,  60),
+    DocLabel.VISION_FOOTNOTE:    (60,  190, 100),
+    # Orange — table
+    DocLabel.TABLE:              (230, 130,  20),
+    # Purples — formula
+    DocLabel.FORMULA:            (170,  60, 220),
+    DocLabel.FORMULA_NUMBER:     (190,  90, 240),
+    # Greys — metadata
+    DocLabel.HEADER:             (130, 130, 130),
+    DocLabel.FOOTER:             (130, 130, 130),
+    DocLabel.NUMBER:             (150, 150, 150),
+    DocLabel.SEAL:               (110, 110, 110),
+    # Red — noise
+    DocLabel.ABANDON:            (220,  50,  50),
 }
 
 class LayoutVisualizer:
