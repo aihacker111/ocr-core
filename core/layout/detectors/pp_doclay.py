@@ -1,11 +1,8 @@
 """
 PP-DocLayout-V3 detector — PyTorch backend via HuggingFace transformers.
 
-Model source: PaddlePaddle/PP-DocLayoutV3_safetensors (HuggingFace)
-Architecture: RT-DETR, loaded via AutoModelForObjectDetection
-
-Weights are downloaded once and cached by the transformers library.
-No ultralytics / ONNX runtime required — pure transformers inference.
+Label mapping is read directly from model.config.id2label at load time,
+so it always stays in sync with whatever the model ships — no hardcoded list.
 """
 
 from __future__ import annotations
@@ -13,14 +10,13 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-import torch
 from PIL import Image
 
 from ...config.layout_config import LayoutConfig
 from ..base import BaseLayoutDetector
-from ..labels import label_from_index
 from ..postprocessor import LayoutPostprocessor
 from ..region import LayoutRegion
+from ..labels import DocLabel
 
 logger = logging.getLogger(__name__)
 
@@ -28,16 +24,11 @@ _HF_REPO = "PaddlePaddle/PP-DocLayoutV3_safetensors"
 
 
 class PPDocLayoutDetector(BaseLayoutDetector):
-    """
-    Concrete layout detector backed by PP-DocLayout-V3 via transformers.
-
-    Uses AutoModelForObjectDetection + AutoImageProcessor so the full
-    pre/post-processing is handled by the official HuggingFace pipeline.
-    """
 
     def __init__(self, config: LayoutConfig) -> None:
         self._model           = None
         self._image_processor = None
+        self._id2label:  dict[int, str]      = {}   # filled in _load()
         self._post = LayoutPostprocessor(
             score_threshold=config.score_threshold,
             nms_iou_threshold=config.nms_iou_threshold,
@@ -53,7 +44,7 @@ class PPDocLayoutDetector(BaseLayoutDetector):
             from transformers import AutoImageProcessor, AutoModelForObjectDetection
         except ImportError as exc:
             raise ImportError(
-                "transformers is required for PPDocLayoutDetector.\n"
+                "transformers is required.\n"
                 "Install with:  pip install transformers"
             ) from exc
 
@@ -61,44 +52,44 @@ class PPDocLayoutDetector(BaseLayoutDetector):
         cache_dir = str(Path(self.config.cache_dir).expanduser()) if not self.config.model_path else None
         device    = self._resolve_device()
 
-        logger.info("[PPDocLayout] Loading image processor from: %s", model_id)
         self._image_processor = AutoImageProcessor.from_pretrained(
-            model_id,
-            cache_dir=cache_dir,
+            model_id, cache_dir=cache_dir,
         )
-
-        logger.info("[PPDocLayout] Loading model from: %s", model_id)
         self._model = AutoModelForObjectDetection.from_pretrained(
-            model_id,
-            cache_dir=cache_dir,
+            model_id, cache_dir=cache_dir,
         )
         self._model.to(device)
         self._model.eval()
-        logger.info("[PPDocLayout] Model loaded on device: %s", device)
+
+        # ── Read label mapping directly from model config ──────────────────
+        # Mirrors the reference example: model.config.id2label[label]
+        # Keys are strings in HF config ("0", "1", …) — convert to int.
+        self._id2label = {
+            int(k): v
+            for k, v in self._model.config.id2label.items()
+        }
+        logger.info(
+            "[PPDocLayout] Loaded %d labels from model.config.id2label: %s",
+            len(self._id2label),
+            self._id2label,
+        )
 
     def _predict(self, image: Image.Image) -> list[LayoutRegion]:
         image = image.convert("RGB")
-        raw_regions = self._run_inference(image)
-        return self._post.process(raw_regions)
+        return self._post.process(self._run_inference(image))
 
     # ── Inference ──────────────────────────────────────────────────────────────
 
     def _run_inference(self, image: Image.Image) -> list[LayoutRegion]:
-        """
-        Run transformers object-detection inference and convert results
-        to a flat list of LayoutRegion.
-        """
+        import torch
         device = self._resolve_device()
 
-        # Preprocess — image_processor handles resize, normalise, tensor conversion
         inputs = self._image_processor(images=image, return_tensors="pt")
         inputs = {k: v.to(device) for k, v in inputs.items()}
 
-        # Forward pass
         with torch.inference_mode():
             outputs = self._model(**inputs)
 
-        # Post-process — returns boxes in original image pixel space
         results = self._image_processor.post_process_object_detection(
             outputs,
             target_sizes=[image.size[::-1]],   # (height, width)
@@ -108,8 +99,7 @@ class PPDocLayoutDetector(BaseLayoutDetector):
         if not results:
             return regions
 
-        result = results[0]   # batch size = 1
-
+        result         = results[0]
         scores         = result["scores"]
         label_ids      = result["labels"]
         boxes          = result["boxes"]
@@ -122,11 +112,15 @@ class PPDocLayoutDetector(BaseLayoutDetector):
             if score_val < self.config.score_threshold:
                 continue
 
+            label_int  = label_id.item()
+            # Use model.config.id2label exactly like the reference example
+            label_str  = self._id2label.get(label_int, "abandon")
+            doc_label  = self._str_to_doclabel(label_str)
+
             x1, y1, x2, y2 = (int(round(v)) for v in box.tolist())
             if x2 <= x1 or y2 <= y1:
                 continue
 
-            # Convert polygon tensor → list[list[int]] if present
             poly_list = None
             if poly is not None:
                 poly_list = [[int(round(p[0])), int(round(p[1]))]
@@ -134,7 +128,7 @@ class PPDocLayoutDetector(BaseLayoutDetector):
 
             regions.append(LayoutRegion(
                 index=idx,
-                label=label_from_index(label_id.item()),
+                label=doc_label,
                 score=score_val,
                 bbox=[x1, y1, x2, y2],
                 poly=poly_list,
@@ -142,9 +136,48 @@ class PPDocLayoutDetector(BaseLayoutDetector):
 
         return regions
 
+    # ── Label string → DocLabel ────────────────────────────────────────────────
+
+    @staticmethod
+    def _str_to_doclabel(label_str: str) -> DocLabel:
+        """
+        Map the raw string from model.config.id2label to a DocLabel.
+
+        Falls back to ABANDON for any unknown string so the pipeline
+        never crashes on new/unexpected label names.
+        """
+        _MAP: dict[str, DocLabel] = {
+            "abstract":           DocLabel.ABSTRACT,
+            "algorithm":          DocLabel.ALGORITHM,
+            "aside_text":         DocLabel.ASIDE_TEXT,
+            "chart":              DocLabel.CHART,
+            "content":            DocLabel.CONTENT,
+            "formula":            DocLabel.FORMULA,
+            "doc_title":          DocLabel.DOC_TITLE,
+            "figure_title":       DocLabel.FIGURE_TITLE,
+            "footer":             DocLabel.FOOTER,
+            "footnote":           DocLabel.FOOTNOTE,
+            "formula_number":     DocLabel.FORMULA_NUMBER,
+            "header":             DocLabel.HEADER,
+            "image":              DocLabel.IMAGE,
+            "number":             DocLabel.NUMBER,
+            "paragraph_title":    DocLabel.PARAGRAPH_TITLE,
+            "reference":          DocLabel.REFERENCE,
+            "reference_content":  DocLabel.REFERENCE_CONTENT,
+            "seal":               DocLabel.SEAL,
+            "table":              DocLabel.TABLE,
+            "text":               DocLabel.TEXT,
+            "vision_footnote":    DocLabel.VISION_FOOTNOTE,
+        }
+        return _MAP.get(label_str.lower(), DocLabel.ABANDON)
+
     # ── Device helper ──────────────────────────────────────────────────────────
 
     def _resolve_device(self) -> str:
         if self.config.device == "auto":
-            return "cuda" if torch.cuda.is_available() else "cpu"
+            try:
+                import torch
+                return "cuda" if torch.cuda.is_available() else "cpu"
+            except ImportError:
+                return "cpu"
         return self.config.device
