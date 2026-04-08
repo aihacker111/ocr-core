@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from pathlib import Path
 
 from PIL import Image
 
@@ -28,12 +29,6 @@ _DEFAULT_MODEL_ID = "zai-org/GLM-OCR"
 
 
 class GLMOCRModel(BaseOCRModel):
-    """
-    Concrete OCR model backed by GLM-OCR (0.9B multimodal VLM).
-
-    Swap tip: replace this with any other BaseOCRModel in ocr/models/__init__.py.
-    The pipeline references only BaseOCRModel.
-    """
 
     def __init__(self, config: OCRConfig) -> None:
         self._model      = None
@@ -42,11 +37,9 @@ class GLMOCRModel(BaseOCRModel):
         self._prompt_bld = PromptBuilder()
         super().__init__(config)
 
-    # ── BaseOCRModel contract ──────────────────────────────────────────────────
-
     def _load(self) -> None:
         try:
-            import torch  # noqa: F401 — validates torch is available
+            import torch  # noqa: F401
         except ImportError as exc:
             raise ImportError(
                 "PyTorch is required for GLMOCRModel.\n"
@@ -55,15 +48,22 @@ class GLMOCRModel(BaseOCRModel):
 
         from transformers import AutoModelForImageTextToText, AutoProcessor
 
-        model_id   = self.config.model_id or _DEFAULT_MODEL_ID
-        cache_dir  = str(self.config.cache_dir)
+        model_id  = self.config.model_id or _DEFAULT_MODEL_ID
+
+        # Expand ~ and pre-create the full directory tree so huggingface_hub
+        # can write its blobs/snapshots/pointers layout without hitting
+        # FileNotFoundError when it tries to create symlinks.
+        cache_dir = Path(self.config.cache_dir).expanduser().resolve()
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_dir_str = str(cache_dir)
+
         dtype      = self._resolve_dtype()
         device_map = self._resolve_device_map()
 
-        logger.info("[GLMOCRModel] Loading processor: %s", model_id)
+        logger.info("[GLMOCRModel] Loading processor: %s (cache: %s)", model_id, cache_dir_str)
         self._processor = AutoProcessor.from_pretrained(
             model_id,
-            cache_dir=cache_dir,
+            cache_dir=cache_dir_str,
             trust_remote_code=self.config.trust_remote_code,
         )
 
@@ -75,16 +75,12 @@ class GLMOCRModel(BaseOCRModel):
             model_id,
             torch_dtype=dtype,
             device_map=device_map,
-            cache_dir=cache_dir,
+            cache_dir=cache_dir_str,
             trust_remote_code=self.config.trust_remote_code,
         )
         self._model.eval()
 
     def _recognize(self, crop: Image.Image, label: DocLabel) -> str:
-        """
-        Thread-safe inference — acquires _lock before entering the model.
-        Returns raw decoded text from the model.
-        """
         import torch
 
         messages = self._prompt_bld.build_messages(crop.convert("RGB"), label)
@@ -114,8 +110,6 @@ class GLMOCRModel(BaseOCRModel):
             raw_text = self._processor.decode(new_ids, skip_special_tokens=True)
 
         return raw_text.strip()
-
-    # ── Device / dtype helpers ─────────────────────────────────────────────────
 
     def _resolve_device_map(self):
         dev = self.config.device
