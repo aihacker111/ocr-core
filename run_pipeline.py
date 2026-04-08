@@ -20,7 +20,10 @@ _ROOT = Path(__file__).resolve().parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+from PIL import Image
+
 from core import OCRPipeline, PipelineConfig, LayoutConfig, OCRConfig
+from core.loader.page_loader import PageLoader
 
 
 def main() -> int:
@@ -58,7 +61,13 @@ def main() -> int:
     else:
         pipeline = OCRPipeline()
 
-    text = pipeline.run_file_to_string(args.path)
+    # Single image file → public run_image API (same OCR path as run_file for one page).
+    p = args.path.resolve()
+    if p.is_file() and p.suffix.lower() in PageLoader.SUPPORTED_IMAGE_EXTS:
+        img = Image.open(p).convert("RGB")
+        text = pipeline.run_image(img).formatted
+    else:
+        text = pipeline.run_file_to_string(p)
 
     if args.output is not None:
         args.output.write_text(text, encoding="utf-8")
