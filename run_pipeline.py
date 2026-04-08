@@ -65,7 +65,7 @@ def main() -> int:
     p = args.path.resolve()
     if p.is_file() and p.suffix.lower() in PageLoader.SUPPORTED_IMAGE_EXTS:
         img = Image.open(p).convert("RGB")
-        text = pipeline.run_image(img).formatted
+        text = pipeline.run_image(img, save_layout_path='out.png').formatted
     else:
         text = pipeline.run_file_to_string(p)
 
