@@ -5,15 +5,20 @@ Pipeline stages
 ---------------
 1. PageLoader       — reads a PDF / image file into PIL Images (one per page)
 2. LayoutDetector   — detects and classifies regions on each page
-3. WorkerPool+Model — runs OCR on each text region in parallel threads
-4. ResultFormatter  — converts OCRResult objects to Markdown / JSON / text
+3. IMAGE/CHART      — optional PNG crops under ``save_images_dir`` (markdown embeds)
+4. WorkerPool+Model — runs OCR on text regions (graphics excluded)
+5. ResultFormatter  — merges graphic + text results, then formats output
 
 Quick start
 -----------
     from core import OCRPipeline, PipelineConfig, LayoutConfig, OCRConfig
 
-    # All pages:
-    pipeline = OCRPipeline()
+    # All pages, with figure crops embedded in Markdown:
+    cfg = PipelineConfig(
+        save_images_dir="output/images",
+        output_format="markdown",
+    )
+    pipeline = OCRPipeline(cfg)
     doc = pipeline.run_file("report.pdf")
     print(doc.merged_text)
 
@@ -43,13 +48,15 @@ from PIL import Image
 
 from .config.pipeline_config     import PipelineConfig
 from .layout                     import build_detector, BaseLayoutDetector
+from .layout.labels              import GRAPHICAL_LABELS
 from .layout.region              import LayoutRegion
 from .loader.page_loader         import PageLoader, PagesSpec
 from .ocr                        import build_ocr_model, BaseOCRModel
 from .ocr.result                 import OCRResult
 from .ocr.worker_pool            import WorkerPool
 from .formatter.result_formatter import ResultFormatter
-from .utils.visualize    import LayoutVisualizer
+from .utils.image_utils          import crop_region
+from .utils.visualize            import LayoutVisualizer
 
 logger = logging.getLogger(__name__)
 
@@ -275,8 +282,10 @@ class OCRPipeline:
             1. Ensure RGB
             2. Layout detection  → sorted LayoutRegion list
             3. Layout visualise  → save annotated image (optional)
-            4. Worker pool OCR   → OCRResult list (same order)
-            5. Format output     → string in configured format
+            4. Graphic regions   → crop IMAGE/CHART, optional PNG + OCRResult stubs
+            5. Worker pool OCR   → text regions only
+            6. Merge + sort      → by region_index
+            7. Format output     → string in configured format
         """
         image = image.convert("RGB")
 
@@ -306,20 +315,79 @@ class OCRPipeline:
                 layout_image=layout_image,
             )
 
-        # Stage 3 — OCR
-        ocr_results = self._pool.run(full_image=image, regions=regions)
+        # Stage 3 — IMAGE / CHART crops (always emit OCRResult rows for markdown)
+        graphic_results = self._crop_image_regions(image, regions, page_index)
+
+        # Stage 4 — OCR on text regions (graphics handled above)
+        text_results = self._pool.run(full_image=image, regions=regions)
         logger.debug(
-            "[OCRPipeline] Page %d: %d OCR result(s)",
-            page_index + 1, len(ocr_results),
+            "[OCRPipeline] Page %d: %d text OCR result(s), %d graphic stub(s)",
+            page_index + 1, len(text_results), len(graphic_results),
         )
 
-        # Stage 4 — Formatting
-        formatted = self._formatter.format(ocr_results, fmt=self.config.output_format)
+        merged = sorted(
+            text_results + graphic_results,
+            key=lambda r: r.region_index,
+        )
+
+        # Stage 5 — Formatting
+        formatted = self._formatter.format(merged, fmt=self.config.output_format)
 
         return PageResult(
             page_index=page_index,
             regions=regions,
-            results=ocr_results,
+            results=merged,
             formatted=formatted,
             layout_image=layout_image,
         )
+
+    def _crop_image_regions(
+        self,
+        image:      Image.Image,
+        regions:    list[LayoutRegion],
+        page_index: int,
+    ) -> list[OCRResult]:
+        """
+        For each IMAGE/CHART region, optionally save a PNG under ``save_images_dir``
+        and return an ``OCRResult`` (empty text, optional ``image_path``) for merging.
+        """
+        out: list[OCRResult] = []
+        raw_dir = self.config.save_images_dir
+        save_root = Path(raw_dir).expanduser() if raw_dir else None
+        if save_root is not None:
+            save_root.mkdir(parents=True, exist_ok=True)
+
+        page_1based = page_index + 1
+        for r in regions:
+            if r.label not in GRAPHICAL_LABELS:
+                continue
+            rel: Optional[str] = None
+            if save_root is not None:
+                fname = f"page_{page_1based:04d}_region_{r.index:02d}_{r.label.value}.png"
+                try:
+                    crop = crop_region(image, r.bbox)
+                    dest = save_root / fname
+                    crop.save(dest, format="PNG")
+                    url_base = self.config.markdown_image_prefix or raw_dir
+                    rel = (Path(url_base) / fname).as_posix()
+                    logger.debug(
+                        "[OCRPipeline] Saved %s region %d → %s",
+                        r.label.value, r.index, rel,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[OCRPipeline] Could not save %s region %d: %s",
+                        r.label.value, r.index, exc,
+                    )
+                    rel = None
+
+            out.append(
+                OCRResult(
+                    region_index=r.index,
+                    label=r.label,
+                    text="",
+                    bbox=r.bbox,
+                    image_path=rel,
+                )
+            )
+        return out

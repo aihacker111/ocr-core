@@ -12,6 +12,10 @@ Usage:
     python run_pipeline.py doc.pdf --layout-dir debug/
     python run_pipeline.py page.png --layout-out debug/layout.png
     python run_pipeline.py doc.pdf --pages 1-3 --output result.md
+    python run_pipeline.py doc.pdf -o report.md --embed-images
+    python run_pipeline.py doc.pdf -o report.md   # .md + markdown format → auto figure dir
+    python run_pipeline.py doc.pdf -o notes.md --no-embed-images
+    python run_pipeline.py doc.pdf --save-images-dir output/figures
 """
 from __future__ import annotations
 
@@ -39,6 +43,37 @@ def _setup_logging(verbose: bool) -> None:
     )
 
 
+def _resolve_image_save_paths(
+    output: Path | None,
+    save_images_dir: Path | None,
+    embed_images: bool,
+) -> tuple[str | None, str | None]:
+    """
+    Returns (save_images_dir, markdown_image_prefix) for PipelineConfig.
+
+    Explicit ``--save-images-dir`` writes there and uses the same path in links.
+    ``--embed-images`` without that flag creates ``<output_stem>_images/`` next
+    to ``-o`` and uses that folder name in Markdown so previews resolve.
+    """
+    if save_images_dir is not None:
+        root = save_images_dir.expanduser().resolve()
+        root.mkdir(parents=True, exist_ok=True)
+        return str(root), None
+
+    if not embed_images:
+        return None, None
+
+    if output is not None:
+        out = output.expanduser().resolve()
+        folder = out.parent / f"{out.stem}_images"
+        folder.mkdir(parents=True, exist_ok=True)
+        return str(folder.resolve()), f"{out.stem}_images"
+
+    fallback = (Path.cwd() / "embedded_images").resolve()
+    fallback.mkdir(parents=True, exist_ok=True)
+    return str(fallback), "embedded_images"
+
+
 def _parse_pages(value: str) -> PagesSpec:
     """
     Convert the --pages CLI string to a PagesSpec.
@@ -61,7 +96,7 @@ def main() -> int:
 
     # ── Positional ────────────────────────────────────────────────────────────
     parser.add_argument(
-        "path",
+        "--path",
         type=Path,
         help="PDF, image file, or directory of images",
     )
@@ -144,6 +179,31 @@ def main() -> int:
         help="Save layout overlay to this file (single-image mode)",
     )
 
+    # ── Figure crops (Markdown ![…](…) and JSON image_path) ────────────────────
+    parser.add_argument(
+        "--save-images-dir",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help=(
+            "Save IMAGE/CHART region crops as PNGs here and reference them in output.\n"
+            "Best with --format markdown (or json)."
+        ),
+    )
+    parser.add_argument(
+        "--embed-images",
+        action="store_true",
+        help=(
+            "Save crops next to -o as <name>_images/ (or ./embedded_images if no -o).\n"
+            "Markdown links use that folder name so previews work next to the .md file."
+        ),
+    )
+    parser.add_argument(
+        "--no-embed-images",
+        action="store_true",
+        help="Turn off automatic figure saving when -o ends with .md (see default behaviour above).",
+    )
+
     # ── Misc ──────────────────────────────────────────────────────────────────
     parser.add_argument(
         "--dpi",
@@ -165,18 +225,42 @@ def main() -> int:
         print(f"error: path does not exist: {args.path}", file=sys.stderr)
         return 1
 
+    auto_embed = (
+        not args.no_embed_images
+        and args.output_format == "markdown"
+        and args.output is not None
+        and args.output.suffix.lower() == ".md"
+        and args.save_images_dir is None
+    )
+    want_figure_crops = args.embed_images or auto_embed
+
+    save_img_dir, md_img_prefix = _resolve_image_save_paths(
+        output=args.output,
+        save_images_dir=args.save_images_dir,
+        embed_images=want_figure_crops,
+    )
+    if args.save_images_dir is not None and args.embed_images:
+        print(
+            "warning: --save-images-dir is set; --embed-images is ignored for the output path",
+            file=sys.stderr,
+        )
+
     # ── Build pipeline ────────────────────────────────────────────────────────
     if args.dummy:
         config = PipelineConfig(
             layout=LayoutConfig(detector_name="dummy"),
             ocr=OCRConfig(model_name="dummy"),
             output_format=args.output_format,
+            save_images_dir=save_img_dir,
+            markdown_image_prefix=md_img_prefix,
         )
     else:
         config = PipelineConfig(
             layout=LayoutConfig(device=args.device),
             ocr=OCRConfig(device=args.device, dtype=args.dtype),
             output_format=args.output_format,
+            save_images_dir=save_img_dir,
+            markdown_image_prefix=md_img_prefix,
         )
 
     pipeline = OCRPipeline(config)

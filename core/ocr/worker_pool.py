@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from PIL import Image
 
-from ..layout.labels import DocLabel, NON_TEXT_LABELS
+from ..layout.labels import DocLabel, GRAPHICAL_LABELS, NON_TEXT_LABELS
 from ..layout.region import LayoutRegion
 from ..utils.image_utils import crop_region
 from .base import BaseOCRModel
@@ -88,6 +88,12 @@ class WorkerPool:
         """
         jobs = []
         for r in regions:
+            if r.label in GRAPHICAL_LABELS:
+                logger.debug(
+                    "Skipping graphical region %d (%s) — pipeline saves crops",
+                    r.index, r.label.value,
+                )
+                continue
             if self._skip_non_text and r.label in NON_TEXT_LABELS:
                 logger.debug("Skipping non-text region %d (%s)", r.index, r.label.value)
                 continue

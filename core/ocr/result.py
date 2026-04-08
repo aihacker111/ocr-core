@@ -21,6 +21,8 @@ class OCRResult:
         text          Extracted text (may be empty on failure).
         bbox          Source bounding box [x1, y1, x2, y2].
         error         Set to an error message if recognition failed.
+        image_path    Relative path to a saved PNG crop for IMAGE/CHART regions
+                      (set when ``PipelineConfig.save_images_dir`` is used).
     """
 
     region_index: int
@@ -28,10 +30,15 @@ class OCRResult:
     text:         str
     bbox:         list[int]
     error:        Optional[str] = None
+    image_path:   Optional[str] = None
 
     @property
     def ok(self) -> bool:
         return self.error is None
+
+    @property
+    def is_image(self) -> bool:
+        return self.image_path is not None
 
     def to_dict(self) -> dict:
         d: dict = {
@@ -42,4 +49,6 @@ class OCRResult:
         }
         if self.error:
             d["error"] = self.error
+        if self.image_path is not None:
+            d["image_path"] = self.image_path
         return d
