@@ -49,7 +49,7 @@ from .ocr                        import build_ocr_model, BaseOCRModel
 from .ocr.result                 import OCRResult
 from .ocr.worker_pool            import WorkerPool
 from .formatter.result_formatter import ResultFormatter
-from .utils.visualizer    import LayoutVisualizer
+from .utils.visualize    import LayoutVisualizer
 
 logger = logging.getLogger(__name__)
 
